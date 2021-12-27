@@ -7,24 +7,26 @@ use std::env;
 use std::io;
 use rand::{Rng};
 use std::io::prelude::*;
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use fstrings::f;
 
 
 const PREFIX: &str = "\x1bPtmux;\x1b\x1bP?";
 const SUFFIX: &str = "\x1b\\\x1b\\";
 
+const PROTOCOL_VERSION: i32 = 1;
+
 fn build_command_payload(random_id: i32, cmd: &str) -> String {
-    return f!("{PREFIX}{random_id};0a{cmd}{SUFFIX}");
+    return f!("{PREFIX}{PROTOCOL_VERSION};{random_id};0a{cmd}{SUFFIX}");
 }
 
 fn build_payload(random_id: i32, payload_number: u32, data: &[u8]) -> String {
     let b64 = base64::encode(data);
-    return f!("{PREFIX}{random_id};{payload_number}a{b64}{SUFFIX}");
+    return f!("{PREFIX}{PROTOCOL_VERSION};{random_id};{payload_number}a{b64}{SUFFIX}");
 }
 
 fn build_close_payload(random_id: i32) -> String {
-    return f!("{PREFIX}{random_id};1a{SUFFIX}");
+    return f!("{PREFIX}{PROTOCOL_VERSION};{random_id};1a{SUFFIX}");
 }
 
 
@@ -39,18 +41,20 @@ fn main() {
 
     let command = env::args().skip(1).collect::<Vec<String>>().join(" ");
 
-    ttyout.write(build_command_payload(random_id, &command).as_bytes());
+    ttyout.write(build_command_payload(random_id, &command).as_bytes()).expect("unable to write zint command to /dev/tty");
+
+    let mut payload_number: i32 = 2; // 0 and 1 are reserved for command and closing
 
     loop {
-
-        match stdin.read(&mut buf) {
-            Ok(0) => { break; }
-            Ok(i) => { 
-                ttyout.write(build_payload(random_id, 2, &buf[..i]).as_bytes());
+        match stdin.read(&mut buf).expect("reading from stdin") {
+            0 => { break; /* stdin has received EOF and is closed */ }
+            i => { 
+                ttyout.write(build_payload(random_id, payload_number as u32, &buf[..i]).as_bytes()).expect("unable to write stdin payload to /dev/tty");
+                payload_number += 1;
+                if payload_number < 0 { payload_number = 2; }
             }
-            Err(e) => { panic!("{}", e) }
         }
     }
 
-    ttyout.write(build_close_payload(random_id).as_bytes());
+    ttyout.write(build_close_payload(random_id).as_bytes()).expect("unable to write closing payload to /dev/tty");
 }
