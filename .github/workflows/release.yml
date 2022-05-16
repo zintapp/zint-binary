@@ -1,0 +1,25 @@
+name: Rust
+
+on:
+  workflow_dispatch:
+    
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Build
+      run: cargo build --verbose
+    - name: Build release
+      run: cargo build --release
+    - name: GH Release
+      uses: softprops/action-gh-release@v0.1.14
+      with:
+          files: target/release/zint
+      
