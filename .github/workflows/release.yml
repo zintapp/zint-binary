@@ -18,8 +18,13 @@ jobs:
       run: cargo build --verbose
     - name: Build release
       run: cargo build --release
+    - name: Get tag from Cargo.toml
+      run: cat Cargo.toml | sed -n '/version/ { s/ //g; s/version/tagName/; p; }' >> $GITHUB_ENV
+    - name: Check output of step above
+      run: echo "{{ env.tagName }}"
     - name: GH Release
       uses: softprops/action-gh-release@v0.1.14
       with:
           files: target/release/zint
+          tag: "{{ env.tagName }}"
       
