@@ -5,6 +5,9 @@ extern crate base64;
 
 extern crate clap;
 
+#[macro_use]
+extern crate serde_json;
+
 use fstrings::f;
 use rand::Rng;
 use std::env;
@@ -12,24 +15,36 @@ use std::fs::OpenOptions;
 use std::io;
 use std::io::prelude::*;
 
-use clap::{Command, crate_version};
+
+
+use const_format::formatcp;
+use clap::{Command, crate_version, Arg};
 
 const PREFIX: &str = "\x1bPtmux;\x1b\x1bP?";
 const SUFFIX: &str = "\x1b\\\x1b\\";
 
-const PROTOCOL_VERSION: i32 = 1;
+const PROTOCOL_MAJOR_VERSION: i32 = 0;
+const PROTOCOL_MINOR_VERSION: i32 = 1;
+const PROTOCOL_MINOR_SUBVERSION: i32 = 1;
+
+const PROTOCOL_PREFIX: &str = formatcp!("{}{};{};{}",
+                PREFIX, 
+                PROTOCOL_MAJOR_VERSION,
+                PROTOCOL_MINOR_VERSION,
+                PROTOCOL_MINOR_SUBVERSION);
 
 fn build_command_payload(random_id: i32, cmd: &str) -> String {
-    return f!("{PREFIX}{PROTOCOL_VERSION};{random_id};0z{cmd}{SUFFIX}");
+    let b64 = base64::encode(cmd);
+    return f!("{PROTOCOL_PREFIX};{random_id};0z{b64}{SUFFIX}");
 }
 
 fn build_payload(random_id: i32, payload_number: u32, data: &[u8]) -> String {
     let b64 = base64::encode(data);
-    return f!("{PREFIX}{PROTOCOL_VERSION};{random_id};{payload_number}z{b64}{SUFFIX}");
+    return f!("{PROTOCOL_PREFIX};{random_id};{payload_number}z{b64}{SUFFIX}");
 }
 
 fn build_close_payload(random_id: i32) -> String {
-    return f!("{PREFIX}{PROTOCOL_VERSION};{random_id};1z{SUFFIX}");
+    return f!("{PROTOCOL_PREFIX};{random_id};1z{SUFFIX}");
 }
 
 fn wrap_stdin(command: String) {
@@ -70,22 +85,12 @@ fn wrap_stdin(command: String) {
 
     ttyout
         .write(build_close_payload(random_id).as_bytes())
-        .expect("unable to write closing payload to /dev/tty");
+            .expect("unable to write closing payload to /dev/tty");
 }
 
 
 
 fn main() {
-/*
-    let mut arg_vec = env::args().collect::<Vec<String>>();
-
-    let split_ix = arg_vec.iter().skip(1).by_ref().position(| x | !x.starts_with("-")).unwrap_or(arg_vec.len()-1) + 1;
-
-    let (zint_parameters, component_parameters) = arg_vec.split_at_mut(split_ix);
- 
-    println!("Zint arguments {:?}", zint_parameters);
-    println!("Component arguments {:?}", component_parameters);
-*/
 
     const ABOUT_TEXT: &str = "This is a helper to tell Zint to create a React Component and pass it the data from its stdin. \n\
         It will ask Zint terminal it create the requested <COMPONENT> (default: iframe)\n\
@@ -97,6 +102,12 @@ fn main() {
     .about(ABOUT_TEXT)
     .allow_external_subcommands(true)
     .subcommand_value_name("COMPONENT [COMPONENT_OPTIONS]")
+        .arg(Arg::new("title")
+           .short('t')
+           .long("title")
+           .takes_value(true)
+           .value_name("TITLE")
+           .help("title of the tab"))
        /* .arg(Arg::new("position")
             .short('p')
             .help("position of the component")
@@ -104,20 +115,30 @@ fn main() {
         )*/
     .get_matches();
 
-    let subc = app_m.subcommand();
+    //println!("{:?}", app_m);
 
+    let mut json_command = json!({});
+    let subcommand = app_m.subcommand();
 
-    let component_command = match app_m.subcommand() {
-        None => { String::from("") }
+    if let Some(c) = app_m.value_of("title") {
+        json_command["title"] = json!(c);
+    }
+
+    //println!("json object {}", json_command.to_string());
+
+    //println!("{:?}", subcommand);
+    json_command["command"] = match subcommand {
+        None => { json!([String::from("")]) }
         Some((name, arg_matches)) => { 
             let mut params: Vec<String> = Vec::new();
             params.push(String::from(name));
-            if let Some(mut subargs) = arg_matches.values_of("") {
+            if let Some(subargs) = arg_matches.values_of("") {
                 params.extend(subargs.map(|x| String::from(x)).collect::<Vec<String>>());
             }
-            params.join(" ")
+            json!(params)
         }
     };
 
-   wrap_stdin(component_command);
+
+   wrap_stdin(json_command.to_string());
 }
