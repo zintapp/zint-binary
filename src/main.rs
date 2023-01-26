@@ -8,12 +8,23 @@ extern crate clap;
 #[macro_use]
 extern crate serde_json;
 
+use futures::pin_mut;
+use std::pin::Pin;
+
+
 use fstrings::f;
 use rand::Rng;
 use std::env;
-use std::fs::OpenOptions;
-use std::io;
-use std::io::prelude::*;
+use std::os::fd::AsRawFd;
+
+use std::time::Duration;
+
+
+use tokio::fs::{File, OpenOptions};
+use tokio::io::AsyncWriteExt;
+use async_std::io::{self, ReadExt, WriteExt, Stdout};
+
+use tokio::time::sleep;
 
 
 
@@ -47,12 +58,15 @@ fn build_close_payload(random_id: i32) -> String {
     return f!("{PROTOCOL_PREFIX};{random_id};1z{SUFFIX}");
 }
 
-fn wrap_stdin(command: String) {
+
+async fn wrap_stdin(command: String) -> Result<(), Box<dyn std::error::Error>> {
     let mut stdin = io::stdin();
-    let mut ttyout = OpenOptions::new()
-        .write(true)
-        .open("/dev/tty")
-        .expect("unable to open /dev/tty for writing");
+    let mut stdout = io::stdout();
+    let ttyout = OpenOptions::new().write(true)/* .create(true) */.open("/dev/tty").await?;
+
+    pin_mut!(ttyout);
+
+
 
     let mut buf: [u8; 65536] = [0; 65536];
 
@@ -61,36 +75,36 @@ fn wrap_stdin(command: String) {
 
 
     ttyout
-        .write(build_command_payload(random_id, &command).as_bytes())
-        .expect("unable to write zint command to /dev/tty");
+        .write_all(build_command_payload(random_id, &command).as_bytes())
+            .await.expect("unable to write command payload to /dev/tty");
 
-    let mut payload_number: i32 = 2; // 0 and 1 are reserved for command and closing
-
+    let mut payload_number: u32 = 10; // 0 to 9 are reserved for command and closing
+    
     loop {
-        match stdin.read(&mut buf).expect("reading from stdin") {
-            0 => {
-                break; /* stdin has received EOF and is closed */
-            }
-            i => {
-                ttyout
-                    .write(build_payload(random_id, payload_number as u32, &buf[..i]).as_bytes())
-                    .expect("unable to write stdin payload to /dev/tty");
-                payload_number += 1;
-                if payload_number < 0 {
-                    payload_number = 2;
-                }
-            }
+        let n = stdin.read(&mut buf).await?;
+        if n == 0 {
+            break;
         }
+        ttyout
+            .write_all(build_payload(random_id, payload_number, &buf[..n]).as_bytes())
+                .await.expect("unable to write payload to /dev/tty");
+        payload_number += 1;
     }
+             
+    
 
     ttyout
-        .write(build_close_payload(random_id).as_bytes())
-            .expect("unable to write closing payload to /dev/tty");
+        .write_all(build_close_payload(random_id).as_bytes())
+            .await.expect("unable to write closing payload to /dev/tty");
+    ttyout.flush().await?;
+
+    Ok(())
 }
 
 
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>>  {
 
     const ABOUT_TEXT: &str = "This is a helper to tell Zint to create a React Component and pass it the data from its stdin. \n\
         It will ask Zint terminal it create the requested <COMPONENT> (default: iframe)\n\
@@ -140,5 +154,8 @@ fn main() {
     };
 
 
-   wrap_stdin(json_command.to_string());
+   wrap_stdin(json_command.to_string()).await?;
+
+
+   Ok(())
 }
