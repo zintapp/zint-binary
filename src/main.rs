@@ -8,25 +8,20 @@ extern crate clap;
 #[macro_use]
 extern crate serde_json;
 
-use futures::pin_mut;
-use std::pin::Pin;
+extern crate atty;
+
+mod echo;
 
 
 use fstrings::f;
 use rand::Rng;
 use std::env;
-use std::os::fd::AsRawFd;
 
-use std::time::Duration;
+use tokio::fs::{OpenOptions};
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
+use async_std::io::{self, ReadExt, WriteExt};
 
-
-use tokio::fs::{File, OpenOptions};
-use tokio::io::AsyncWriteExt;
-use async_std::io::{self, ReadExt, WriteExt, Stdout};
-
-use tokio::time::sleep;
-
-
+use std::os::unix::io::AsRawFd;
 
 use const_format::formatcp;
 use clap::{Command, crate_version, Arg};
@@ -54,25 +49,25 @@ fn build_payload(random_id: i32, payload_number: u32, data: &[u8]) -> String {
     return f!("{PROTOCOL_PREFIX};{random_id};{payload_number}z{b64}{SUFFIX}");
 }
 
-fn build_close_payload(random_id: i32) -> String {
+fn build_eof_payload(random_id: i32) -> String {
     return f!("{PROTOCOL_PREFIX};{random_id};1z{SUFFIX}");
 }
 
+fn build_close_payload(random_id: i32) -> String {
+    return f!("{PROTOCOL_PREFIX};{random_id};2z{SUFFIX}");
+}
 
-async fn wrap_stdin(command: String) -> Result<(), Box<dyn std::error::Error>> {
+
+
+async fn wrap_stdin(command: String, 
+        do_read_stdin: bool, 
+        random_id: i32) -> io::Result<()> {
     let mut stdin = io::stdin();
-    let mut stdout = io::stdout();
-    let ttyout = OpenOptions::new().write(true)/* .create(true) */.open("/dev/tty").await?;
-
-    pin_mut!(ttyout);
-
+    //let mut stdout = io::stdout();
+    let mut ttyout = OpenOptions::new().write(true).open("/dev/tty").await?;
 
 
     let mut buf: [u8; 65536] = [0; 65536];
-
-    let random_id_u: u32 = rand::thread_rng().gen();
-    let random_id: i32 = random_id_u as i32 & i32::MAX;
-
 
     ttyout
         .write_all(build_command_payload(random_id, &command).as_bytes())
@@ -80,31 +75,61 @@ async fn wrap_stdin(command: String) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut payload_number: u32 = 10; // 0 to 9 are reserved for command and closing
     
-    loop {
-        let n = stdin.read(&mut buf).await?;
-        if n == 0 {
-            break;
+    if do_read_stdin {
+        loop {
+            let n = stdin.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            ttyout
+                .write_all(
+                    build_payload(random_id, payload_number, &buf[..n])
+                    .as_bytes())
+                .await
+                .expect("unable to write payload to /dev/tty");
+            payload_number += 1;
         }
-        ttyout
-            .write_all(build_payload(random_id, payload_number, &buf[..n]).as_bytes())
-                .await.expect("unable to write payload to /dev/tty");
-        payload_number += 1;
     }
-             
-    
+    else {
+        ttyout.write_all(b"not reading stdin as it is a tty").
+            await.expect("unable to write payload to /dev/tty");
+    }
 
     ttyout
-        .write_all(build_close_payload(random_id).as_bytes())
+        .write_all(build_eof_payload(random_id).as_bytes())
             .await.expect("unable to write closing payload to /dev/tty");
     ttyout.flush().await?;
 
     Ok(())
 }
 
+async fn read_tty() -> io::Result<()> {
+    let mut stdout = io::stdout();
+    let mut ttyin = OpenOptions::new().
+        read(true).
+        write(false).open("/dev/tty").await?;
 
+    let mut buf: [u8; 65536] = [0; 65536];
+
+    let _disable_echo = echo::HiddenInput::new(ttyin.as_raw_fd());
+
+    loop {
+        let n = ttyin.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        let decoded = base64::decode(&buf[..n-1]).unwrap();
+        stdout
+            .write_all(&decoded)
+            .await
+            .expect("unable to write payload to stdout");
+        }
+
+    Ok(())
+}
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>>  {
+async fn main() -> io::Result<()>  {
 
     const ABOUT_TEXT: &str = "This is a helper to tell Zint to create a React Component and pass it the data from its stdin. \n\
         It will ask Zint terminal it create the requested <COMPONENT> (default: iframe)\n\
@@ -153,9 +178,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>  {
         }
     };
 
+    let json_command = json_command.to_string();
 
-   wrap_stdin(json_command.to_string()).await?;
+
+    let random_id_u: u32 = rand::thread_rng().gen();
+    let random_id: i32 = random_id_u as i32 & i32::MAX;
+
+    let wrap_handle = tokio::spawn(async move {
+        wrap_stdin(json_command, 
+            atty::isnt(atty::Stream::Stdin), 
+            random_id).await?;
+
+        Ok::<_, io::Error>(())
+    });
 
 
-   Ok(())
+    let read_handle = tokio::spawn(async move {
+        read_tty().await?;
+
+        Ok::<_, io::Error>(())
+    });
+
+    wrap_handle.await??;
+    read_handle.await??;
+
+    // would be nicer to not open the terminal twice but in the meantime...
+    let mut ttyout = OpenOptions::new().write(true).open("/dev/tty").await?;
+    ttyout.write_all(build_close_payload(random_id).as_bytes()).await?;
+    
+    Ok(())
 }
