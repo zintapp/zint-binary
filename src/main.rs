@@ -19,6 +19,7 @@ use std::env;
 
 use tokio::fs::{OpenOptions};
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
+use futures::future::join_all;
 use async_std::io::{self, ReadExt, WriteExt};
 
 use std::os::unix::io::AsRawFd;
@@ -90,10 +91,10 @@ async fn wrap_stdin(command: String,
             payload_number += 1;
         }
     }
-    else {
+    /* else {
         ttyout.write_all(b"not reading stdin as it is a tty").
             await.expect("unable to write payload to /dev/tty");
-    }
+    } */
 
     ttyout
         .write_all(build_eof_payload(random_id).as_bytes())
@@ -199,8 +200,18 @@ async fn main() -> io::Result<()>  {
         Ok::<_, io::Error>(())
     });
 
-    wrap_handle.await??;
-    read_handle.await??;
+
+    let join_future = join_all(vec![wrap_handle, read_handle]);
+
+
+    let _ = tokio::select! {
+        res = tokio::signal::ctrl_c() => {
+            res
+        },
+        _ = join_future => {
+            Ok(())
+        }
+    };
 
     // would be nicer to not open the terminal twice but in the meantime...
     let mut ttyout = OpenOptions::new().write(true).open("/dev/tty").await?;

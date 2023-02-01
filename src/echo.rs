@@ -1,3 +1,8 @@
+// extracted and modified from 'rpassword' crate
+// https://github.com/conradkleinespel/rpassword/blob/master/src/lib.rs
+// under Apache 2.0 license
+
+
 use libc::{c_int, tcsetattr, termios, ECHO, ECHONL, TCSANOW};
 use std::io;
 use std::mem;
@@ -15,10 +20,11 @@ impl HiddenInput {
         let mut term = safe_tcgetattr(fd)?;
         let term_orig = safe_tcgetattr(fd)?;
 
-        // Hide the password. This is what makes this function useful.
+        // Hide the user input.
         term.c_lflag &= !ECHO;
 
-        // But don't hide the NL character when the user hits ENTER.
+        // also hide the NL character when the user hits ENTER
+        // (because the 'User' will actually be automated input from Zint).
         term.c_lflag &= !ECHONL;
 
         // Save the settings for now.
